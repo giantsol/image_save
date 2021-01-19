@@ -1,13 +1,17 @@
 package com.samoy.image_save;
 
 import android.Manifest;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Environment;
-import android.widget.Toast;
+import android.os.ParcelFileDescriptor;
+import android.provider.MediaStore;
 
 import androidx.core.app.ActivityCompat;
 
@@ -15,6 +19,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -95,26 +100,61 @@ public class ImageSavePlugin implements MethodCallHandler, PluginRegistry.Reques
         if (albumName == null) {
             albumName = getApplicationName();
         }
-        File parentDir = new File(Environment.getExternalStoragePublicDirectory(DIRECTORY_PICTURES), albumName);
-        if (!parentDir.exists()) {
-            parentDir.mkdir();
-        }
-        File file = new File(parentDir, imageName);
-        if (!overwriteSameNameFile) {
-            if (file.exists()) {
-                throw new IOException("File already exists");
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            File parentDir = new File(Environment.getExternalStoragePublicDirectory(DIRECTORY_PICTURES), albumName);
+            if (!parentDir.exists()) {
+                parentDir.mkdir();
             }
-        }
-        try {
-            FileOutputStream fos = new FileOutputStream(file);
-            fos.write(data);
-            fos.close();
-            context.sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(file.getAbsoluteFile())));
+            File file = new File(parentDir, imageName);
+            if (!overwriteSameNameFile) {
+                if (file.exists()) {
+                    throw new IOException("File already exists");
+                }
+            }
+            try {
+                FileOutputStream fos = new FileOutputStream(file);
+                fos.write(data);
+                fos.close();
+                context.sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(file.getAbsoluteFile())));
+                return true;
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            return false;
+        } else {
+            final ContentResolver resolver = context.getContentResolver();
+
+            // Find all image files on the primary external storage device.
+            final Uri imageCollection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
+
+            // Publish a new image.
+            final ContentValues newImage = new ContentValues();
+            newImage.put(MediaStore.Images.Media.DISPLAY_NAME, imageName);
+            newImage.put(MediaStore.Images.Media.IS_PENDING, 1);
+            newImage.put(MediaStore.Images.Media.RELATIVE_PATH, DIRECTORY_PICTURES + "/" + albumName);
+
+            final Uri contentUri = resolver.insert(imageCollection, newImage);
+
+            try (ParcelFileDescriptor pfd =
+                         resolver.openFileDescriptor(contentUri, "w", null)) {
+                final OutputStream os = new FileOutputStream(pfd.getFileDescriptor());
+                os.write(data);
+                os.close();
+            } catch (Exception e) {
+                e.printStackTrace();
+                return false;
+            } finally {
+                // Now that we're finished, release the "pending" status.
+                if (contentUri != null) {
+                    newImage.clear();
+                    newImage.put(MediaStore.Audio.Media.IS_PENDING, 0);
+                    resolver.update(contentUri, newImage, null, null);
+                }
+            }
+
             return true;
-        } catch (IOException e) {
-            e.printStackTrace();
         }
-        return false;
     }
 
     private void saveImageToSandboxCall() {
